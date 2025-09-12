@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gerador de Etiquetas ZPL com Editor Visual</title>
+  <!-- Dependências via CDN para fácil hospedagem -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- Estilos e Fontes -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    .step-active .step-circle { border-color: #3b82f6; color: #3b82f6; }
+    .step-active .step-label { color: #111827; }
+    .step-done .step-circle { background-color: #3b82f6; border-color: #3b82f6; color: white; }
+    .drag-over { border-color: #3b82f6; background-color: #eff6ff; }
+    .btn-primary { background-color: #3b82f6; color: white; transition: background-color 0.3s; }
+    .btn-primary:hover:not(:disabled) { background-color: #2563eb; }
+    .btn-primary:disabled { background-color: #9ca3af; cursor: not-allowed; }
+    .btn-secondary { background-color: #e5e7eb; color: #374151; transition: background-color 0.3s; }
+    .btn-secondary:hover { background-color: #d1d5db; }
+    .modal-overlay { position: fixed; inset: 0; background-color: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 50; opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s; }
+    .modal-overlay.visible { opacity: 1; visibility: visible; }
+    .modal-content { background: white; padding: 2rem; border-radius: .75rem; width: 90%; max-width: 420px; transform: scale(.95); transition: transform .2s; }
+    .modal-overlay.visible .modal-content { transform: scale(1); }
+    .canvas-container { position: relative; background-color: #f9fafb; border: 1px solid #e5e7eb; overflow: auto; min-height: 420px; padding: 1rem; }
+    .canvas { position: relative; background-color: white; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); }
+    .canvas-field { position: absolute; cursor: move; border: 1px dashed transparent; padding: 2px 4px; font-size: 10px; white-space: nowrap; user-select: none; }
+    .canvas-field.selected { border-color: #3b82f6; z-index: 10; }
+    .resize-handle { position: absolute; width: 10px; height: 10px; background-color: #3b82f6; border: 1px solid white; border-radius: 2px; bottom: -5px; right: -5px; cursor: se-resize; z-index: 11; }
+    #supabase-status-dot { transition: background-color .5s ease; }
+  </style>
+</head>
+
+<body class="bg-gray-50 text-gray-800">
+  <!-- Notificação Global -->
+  <div id="global-notification" class="hidden fixed top-0 left-0 right-0 bg-yellow-100 border-b-2 border-yellow-400 text-yellow-800 p-4 text-center z-[100] shadow-lg">
+    <p id="global-notification-text"></p>
+  </div>
+
+  <!-- Indicador de Status do Usuário e Conexão -->
+  <div class="fixed top-4 right-4 flex items-center space-x-4 z-50">
+    <div id="user-status" class="hidden items-center space-x-2 bg-white p-2 rounded-full shadow-md">
+      <span id="user-email" class="text-sm font-medium text-gray-700 max-w-[150px] truncate"></span>
+      <button id="logout-btn" class="text-sm text-red-500 hover:text-red-700 font-semibold">Sair</button>
+    </div>
+    <div id="supabase-status" class="flex items-center space-x-2 bg-white p-2 rounded-full shadow-md">
+      <div id="supabase-status-dot" class="w-3 h-3 rounded-full bg-yellow-400"></div>
+      <span id="supabase-status-text" class="text-sm font-medium text-gray-700">Offline</span>
+    </div>
+  </div>
+
+  <div id="app" class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 pt-20">
+    <header class="mb-8 text-center">
+      <h1 class="text-4xl font-bold text-gray-900">Gerador de Etiquetas para Roupas</h1>
+      <p class="text-lg text-gray-600 mt-2">Importe sua planilha, personalize o layout e imprima etiquetas ZPL com facilidade.</p>
+    </header>
+
+    <main>
+      <!-- Stepper -->
+      <div id="stepper" class="flex items-center justify-center mb-12 max-w-5xl mx-auto">
+        <!-- Passos -->
+        <div id="step-1" class="step-item flex items-center">
+          <div class="step-circle w-10 h-10 flex items-center justify-center rounded-full border-2 font-bold text-lg">1</div>
+          <div class="ml-4"><h2 class="step-label font-semibold">Importar</h2><p class="text-sm text-gray-500">Upload</p></div>
+        </div>
+        <div class="flex-1 h-0.5 bg-gray-200 mx-4"></div>
+        <div id="step-2" class="step-item flex items-center">
+          <div class="step-circle w-10 h-10 flex items-center justify-center rounded-full border-2 font-bold text-lg">2</div>
+          <div class="ml-4"><h2 class="step-label font-semibold">Mapear</h2><p class="text-sm text-gray-500">Colunas</p></div>
+        </div>
+        <div class="flex-1 h-0.5 bg-gray-200 mx-4"></div>
+        <div id="step-3" class="step-item flex items-center">
+          <div class="step-circle w-10 h-10 flex items-center justify-center rounded-full border-2 font-bold text-lg">3</div>
+          <div class="ml-4"><h2 class="step-label font-semibold">Layout</h2><p class="text-sm text-gray-500">Campos</p></div>
+        </div>
+        <div class="flex-1 h-0.5 bg-gray-200 mx-4"></div>
+        <div id="step-4" class="step-item flex items-center">
+          <div class="step-circle w-10 h-10 flex items-center justify-center rounded-full border-2 font-bold text-lg">4</div>
+          <div class="ml-4"><h2 class="step-label font-semibold">Gerar</h2><p class="text-sm text-gray-500">Arquivos</p></div>
+        </div>
+      </div>
+
+      <!-- Views da Aplicação -->
+      <div id="view-1" class="view">
+        <div id="dropzone" class="bg-white p-8 rounded-2xl shadow-sm border-2 border-dashed border-gray-300 text-center cursor-pointer transition-all duration-300">
+            <div class="flex flex-col items-center justify-center space-y-4"><div class="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center"><svg class="w-8 h-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l-3.75 3.75M12 9.75l3.75 3.75M3 17.25V6.75a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 6.75v10.5a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 17.25z" /></svg></div><p class="text-lg font-medium text-gray-700">Arraste e solte sua planilha aqui</p><p class="text-gray-500">ou</p><button id="file-upload-btn" class="btn-primary font-semibold px-6 py-2 rounded-lg">Selecione o arquivo</button><input type="file" id="file-input" class="hidden" accept=".xlsx, .xls, .csv"><p id="file-name" class="text-sm text-gray-600 mt-2"></p></div>
+        </div>
+        <div id="upload-error" class="hidden mt-4 text-red-600 bg-red-100 p-3 rounded-lg"></div>
+      </div>
+      <div id="view-2" class="view hidden"><div class="grid grid-cols-1 md:grid-cols-2 gap-8"><div class="bg-white p-6 rounded-2xl shadow-sm"><h3 class="text-xl font-bold mb-4">Mapear Colunas</h3><p class="text-sm text-gray-600 mb-4">Associe os campos necessários com as colunas da sua planilha.</p><div id="mapping-container" class="space-y-4"></div><div class="mt-6 flex justify-end"><button id="process-mapping-btn" class="btn-primary font-semibold px-6 py-2 rounded-lg">Confirmar e Ir para Layout</button></div></div><div class="bg-white p-6 rounded-2xl shadow-sm"><h3 class="text-xl font-bold mb-4">Pré-visualização dos Dados (5 primeiras linhas)</h3><div class="overflow-x-auto max-h-96"><table id="preview-table" class="w-full text-sm text-left text-gray-500"></table></div></div></div></div>
+      <div id="view-3" class="view hidden"><div class="grid grid-cols-1 lg:grid-cols-3 gap-8"><div class="lg:col-span-2"><div class="bg-white p-4 rounded-2xl shadow-sm"><div class="flex flex-wrap gap-4 justify-between items-center mb-4"><h3 class="text-xl font-bold">Editor Visual de Layout</h3><div class="flex space-x-2"><button id="reset-layout-btn" class="btn-secondary font-semibold px-4 py-1.5 rounded-lg text-sm">Resetar</button><button id="load-template-btn" class="btn-secondary font-semibold px-4 py-1.5 rounded-lg text-sm">Carregar Modelo</button><button id="save-template-btn" class="btn-secondary font-semibold px-4 py-1.5 rounded-lg text-sm">Salvar Modelo</button></div></div><div id="canvas-container" class="canvas-container"><div id="canvas" class="canvas"></div></div></div></div><div><div id="properties-panel" class="bg-white p-6 rounded-2xl shadow-sm space-y-4 sticky top-4"><h3 class="text-xl font-bold">Propriedades</h3><div id="properties-content" class="text-gray-500 text-sm">Selecione um campo para editar.</div></div></div></div><div class="mt-6 flex items-center justify-between"><button id="back-to-mapping-btn-from-layout" class="btn-secondary font-semibold px-6 py-2 rounded-lg">Voltar</button><button id="goto-generate-btn" class="btn-primary font-semibold px-6 py-2 rounded-lg">Avançar para Gerar</button></div></div>
+      <div id="view-4" class="view hidden"><div class="bg-white p-6 rounded-2xl shadow-sm"><h3 class="text-xl font-bold mb-4">Gerar Arquivos Finais</h3><div class="grid grid-cols-1 md:grid-cols-3 gap-8"><div class="md:col-span-2"><h4 class="text-lg font-semibold text-gray-800 mb-2">Quantidades por Produto</h4><p class="text-sm text-gray-600 mb-4">A quantidade inicial é baseada na coluna 'ESTOQUE_ATUAL'. Você pode ajustar os valores abaixo.</p><div id="quantity-list" class="space-y-2 max-h-96 overflow-y-auto pr-4"></div></div><div><h4 class="text-lg font-semibold text-gray-800 mb-2">Opções e Resumo</h4><div class="space-y-4 p-4 bg-gray-50 rounded-lg border"><div><label for="dpmm-select" class="block text-xs font-medium text-gray-600 mb-1">Densidade (DPMM)</label><select id="dpmm-select" class="w-full p-2 border border-gray-300 rounded-lg text-sm"><option value="8">8 dpmm (203 dpi)</option><option value="12">12 dpmm (300 dpi)</option></select></div><div><label for="zpl-charset" class="block text-xs font-medium text-gray-600 mb-1">Codificação ZPL</label><select id="zpl-charset" class="w-full p-2 border rounded-lg text-sm"><option value="utf8" selected>UTF-8 (^CI28)</option><option value="ascii">ASCII (padrão)</option></select></div><div class="text-sm space-y-1 pt-2 border-t"><p><strong>Largura Etiqueta:</strong> <span id="summary-width"></span> mm</p><p><strong>Altura Etiqueta:</strong> <span id="summary-height"></span> mm</p><p><strong>Colunas:</strong> <span id="summary-cols"></span></p><p class="font-bold pt-2">Total de Etiquetas a Gerar: <span id="summary-total" class="text-blue-600"></span></p></div></div></div></div><div class="mt-6 flex items-center justify-between"><button id="back-to-layout-btn" class="btn-secondary font-semibold px-6 py-2 rounded-lg">Voltar ao Layout</button><button id="generate-files-btn" class="btn-primary font-semibold px-6 py-2 rounded-lg flex items-center space-x-2"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg><span>Gerar ZPL + PDF</span></button></div></div></div>
+    </main>
+  </div>
+
+  <!-- Modais -->
+  <div id="save-modal" class="modal-overlay"><div class="modal-content space-y-4"><h3 class="text-xl font-bold">Salvar Modelo de Layout</h3><div><label for="template-name-input" class="block text-sm font-medium text-gray-700 mb-1">Nome do Modelo</label><input type="text" id="template-name-input" class="w-full p-2 border border-gray-300 rounded-lg"></div><div class="flex justify-end space-x-2"><button id="cancel-save-btn" class="btn-secondary px-4 py-2 rounded-lg">Cancelar</button><button id="confirm-save-btn" class="btn-primary px-4 py-2 rounded-lg">Salvar na Nuvem</button></div></div></div>
+  <div id="load-modal" class="modal-overlay"><div class="modal-content space-y-4"><h3 class="text-xl font-bold">Carregar Modelo da Nuvem</h3><div id="template-list" class="max-h-60 overflow-y-auto space-y-2"></div><div class="flex justify-end"><button id="close-load-btn" class="btn-secondary px-4 py-2 rounded-lg">Fechar</button></div></div></div>
+  
+  <!-- Modal de Autenticação (Login/Cadastro) -->
+  <div id="auth-modal" class="modal-overlay">
+    <div class="modal-content">
+      <!-- Formulário de Login (inicialmente visível) -->
+      <div id="login-view">
+        <h3 class="text-xl font-bold mb-4 text-center">Login</h3>
+        <form id="login-form" class="space-y-4">
+          <div><label for="login-email" class="block text-sm font-medium text-gray-700">Email</label><input type="email" id="login-email" required class="w-full p-2 border border-gray-300 rounded-lg mt-1"></div>
+          <div><label for="login-password" class="block text-sm font-medium text-gray-700">Senha</label><input type="password" id="login-password" required class="w-full p-2 border border-gray-300 rounded-lg mt-1"></div>
+          <button type="submit" class="btn-primary w-full py-2 rounded-lg font-semibold">Entrar</button>
+        </form>
+        <p id="auth-error-login" class="text-red-500 text-sm mt-2 text-center"></p>
+        <p class="text-sm text-center mt-4">Não tem uma conta? <button id="show-signup-btn" class="text-blue-600 hover:underline font-semibold">Cadastre-se</button></p>
+      </div>
+
+      <!-- Formulário de Cadastro (inicialmente oculto) -->
+      <div id="signup-view" class="hidden">
+        <h3 class="text-xl font-bold mb-4 text-center">Cadastro</h3>
+        <form id="signup-form" class="space-y-4">
+          <div><label for="signup-email" class="block text-sm font-medium text-gray-700">Email</label><input type="email" id="signup-email" required class="w-full p-2 border border-gray-300 rounded-lg mt-1"></div>
+          <div><label for="signup-password" class="block text-sm font-medium text-gray-700">Senha</label><input type="password" id="signup-password" required class="w-full p-2 border border-gray-300 rounded-lg mt-1"></div>
+          <button type="submit" class="btn-primary w-full py-2 rounded-lg font-semibold">Criar Conta</button>
+        </form>
+        <p id="auth-error-signup" class="text-red-500 text-sm mt-2 text-center"></p>
+        <p class="text-sm text-center mt-4">Já tem uma conta? <button id="show-login-btn" class="text-blue-600 hover:underline font-semibold">Faça Login</button></p>
+      </div>
+    </div>
+  </div>
+
+
+  <script type="module">
+    const { createClient } = supabase;
+    const { jsPDF } = window.jspdf;
+
+    // --- CONFIGURAÇÃO DO SUPABASE ---
+    const SUPABASE_URL = 'https://mnxemxgcucfuoedqkygw.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1ueGVteGdjdWNmdW9lZHFreWd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM4OTY5MTYsImV4cCI6MjA2OTQ3MjkxNn0.JeDMKgnwRcK71KOIun8txqFFBWEHSKdPzIF8Qm9tw1o';
+
+    let supabaseClient;
+    let dbReady = false;
+
+    // --- ESTADO DA APLICAÇÃO ---
+    const DEFAULT_TEMPLATE = {
+      id: null, name: 'Modelo Padrão', labelWidth: 34, labelHeight: 60, columns: 3, spacing: 2,
+      fields: [
+        { id: 'field_default_1', type: 'text', content: '{NOME_PRODUTO}', x: 5, y: 5, fontSize: 3, align: 'center', width: 24 },
+        { id: 'field_default_2', type: 'text', content: '{COR} / {TAMANHO}', x: 5, y: 35, fontSize: 3.5, align: 'center', width: 24 },
+        { id: 'field_default_3', type: 'price', content: '{PRECO}', x: 5, y: 45, fontSize: 5, align: 'center', width: 24 },
+        { id: 'field_default_4', type: 'barcode', content: '{CODIGO_BARRAS}', x: 5, y: 15, width: 24, height: 15 },
+        { id: 'field_default_5', type: 'text', content: '{SKU}', x: 2, y: 2, fontSize: 2, align: 'left', width: 10 },
+        { id: 'field_default_6', type: 'text', content: '{REFERENCIA}', x: 22, y: 2, fontSize: 2, align: 'right', width: 10 },
+      ]
+    };
+
+    const appState = {
+      currentStep: 1, user: null, fileData: [], headers: [], fileName: '', mapping: {}, processedData: [], selectedFieldId: null, templates: [],
+      template: JSON.parse(localStorage.getItem('zpl_current_layout')) || JSON.parse(JSON.stringify(DEFAULT_TEMPLATE))
+    };
+    
+    // --- CACHE DE ELEMENTOS DOM ---
+    const dom = {
+        dropzone: document.getElementById('dropzone'), fileInput: document.getElementById('file-input'), fileUploadBtn: document.getElementById('file-upload-btn'), fileNameEl: document.getElementById('file-name'), uploadErrorEl: document.getElementById('upload-error'),
+        views: { 1: document.getElementById('view-1'), 2: document.getElementById('view-2'), 3: document.getElementById('view-3'), 4: document.getElementById('view-4') },
+        steppers: { 1: document.getElementById('step-1'), 2: document.getElementById('step-2'), 3: document.getElementById('step-3'), 4: document.getElementById('step-4') },
+        supabase: { dot: document.getElementById('supabase-status-dot'), text: document.getElementById('supabase-status-text') },
+        user: { status: document.getElementById('user-status'), email: document.getElementById('user-email'), logoutBtn: document.getElementById('logout-btn') },
+        modals: { save: document.getElementById('save-modal'), load: document.getElementById('load-modal'), auth: document.getElementById('auth-modal') },
+        auth: { loginView: document.getElementById('login-view'), signupView: document.getElementById('signup-view'), loginForm: document.getElementById('login-form'), signupForm: document.getElementById('signup-form'), showSignupBtn: document.getElementById('show-signup-btn'), showLoginBtn: document.getElementById('show-login-btn'), errorLogin: document.getElementById('auth-error-login'), errorSignup: document.getElementById('auth-error-signup') }
+    };
+
+    // --- FUNÇÕES DE AUTENTICAÇÃO ---
+    function updateUIAfterAuthStateChange() {
+      if (appState.user) {
+        dom.user.email.textContent = appState.user.email;
+        dom.user.status.classList.remove('hidden');
+        dom.user.status.classList.add('flex');
+        dom.supabase.dot.style.backgroundColor = '#22c55e';
+        dom.supabase.text.textContent = 'Conectado';
+        dbReady = true;
+        loadTemplates(); // Carrega os templates do usuário logado
+      } else {
+        dom.user.status.classList.add('hidden');
+        dom.supabase.dot.style.backgroundColor = '#9ca3af';
+        dom.supabase.text.textContent = 'Offline';
+        dbReady = false;
+        appState.templates = []; // Limpa templates se não há usuário
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      dom.auth.errorLogin.textContent = '';
+      const email = dom.auth.loginForm.querySelector('#login-email').value;
+      const password = dom.auth.loginForm.querySelector('#login-password').value;
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) {
+        dom.auth.errorLogin.textContent = 'Email ou senha inválidos.';
+      } else {
+        dom.modals.auth.classList.remove('visible');
+      }
+    }
+
+    async function handleSignup(e) {
+      e.preventDefault();
+      dom.auth.errorSignup.textContent = '';
+      const email = dom.auth.signupForm.querySelector('#signup-email').value;
+      const password = dom.auth.signupForm.querySelector('#signup-password').value;
+      const { error } = await supabaseClient.auth.signUp({ email, password });
+      if (error) {
+        dom.auth.errorSignup.textContent = error.message;
+      } else {
+        showNotification('Cadastro realizado! Verifique seu e-mail para confirmar a conta.', 'success');
+        dom.auth.signupView.classList.add('hidden');
+        dom.auth.loginView.classList.remove('hidden');
+      }
+    }
+    
+    function handleLogout() {
+      supabaseClient.auth.signOut();
+    }
+    
+    // --- LÓGICA PRINCIPAL ---
+    async function init() {
+      supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      appState.user = session?.user ?? null;
+      updateUIAfterAuthStateChange();
+      updateUI();
+      
+      supabaseClient.auth.onAuthStateChange((_event, session) => {
+        appState.user = session?.user ?? null;
+        updateUIAfterAuthStateChange();
+      });
+
+      setupEventListeners();
+    }
+
+    // --- FUNÇÕES DE UI ---
+    function updateUI() { /* ... código existente sem alterações ... */ Object.values(dom.views).forEach(v => v.classList.add('hidden')); dom.views[appState.currentStep].classList.remove('hidden'); Object.values(dom.steppers).forEach((step, i) => { const stepNum = i + 1; const circle = step.querySelector('.step-circle'); step.classList.remove('step-active', 'step-done'); circle.innerHTML = stepNum; if (stepNum < appState.currentStep) { step.classList.add('step-done'); circle.innerHTML = '<svg class="w-6 h-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>'; } else if (stepNum === appState.currentStep) { step.classList.add('step-active'); } }); if (appState.currentStep === 3) { renderCanvas(); renderPropertiesPanel(); } if (appState.currentStep === 4) { updateSummary(); populateQuantityList(); } }
+    function showError(message) { dom.uploadErrorEl.textContent = message; dom.uploadErrorEl.classList.remove('hidden'); }
+    function showNotification(message, type = 'info') { const notification = document.getElementById('global-notification'); const text = document.getElementById('global-notification-text'); text.innerHTML = message; notification.className = 'fixed top-0 left-0 right-0 p-4 text-center z-[100] shadow-lg'; if(type === 'success') { notification.classList.add('bg-green-100', 'border-b-2', 'border-green-400', 'text-green-800'); } else { notification.classList.add('bg-yellow-100', 'border-b-2', 'border-yellow-400', 'text-yellow-800'); } setTimeout(() => notification.classList.add('hidden'), 5000); }
+    
+    // --- LÓGICA DE NEGÓCIO (Importação, Mapeamento, Geração) ---
+    const REQUIRED_FIELDS = ['SKU', 'REFERENCIA', 'NOME_PRODUTO', 'COR', 'TAMANHO', 'PRECO', 'CODIGO_BARRAS', 'ESTOQUE_ATUAL'];
+    function handleFile(file) { if (!file) return; dom.fileNameEl.textContent = `Arquivo selecionado: ${file.name}`; appState.fileName = file.name; const reader = new FileReader(); reader.onload = (e) => { try { const data = new Uint8Array(e.target.result); const workbook = XLSX.read(data, { type: 'array' }); const firstSheet = workbook.Sheets[workbook.SheetNames[0]]; const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 }); if (jsonData.length < 2) throw new Error('A planilha precisa ter pelo menos um cabeçalho e uma linha de dados.'); appState.headers = jsonData[0].map(h => String(h).trim()); appState.fileData = jsonData.slice(1); appState.currentStep = 2; populateMapping(); populatePreview(); updateUI(); } catch (err) { showError(`Erro ao ler o arquivo: ${err.message}`); } }; reader.onerror = () => showError('Não foi possível ler o arquivo.'); reader.readAsArrayBuffer(file); }
+    function autoMapHeader(field) { const aliases = { SKU: ['sku', 'id', 'codinterno', 'codigo'], REFERENCIA: ['referencia', 'ref', 'modelo'], NOME_PRODUTO: ['nome', 'descricao', 'descrição', 'produto', 'nomeproduto'], COR: ['cor', 'color'], TAMANHO: ['tamanho', 'tam', 'size'], PRECO: ['preco', 'preço', 'valor', 'price'], CODIGO_BARRAS: ['codigo_barras', 'codbarras', 'ean', 'gtin', 'barcode'], ESTOQUE_ATUAL: ['estoque', 'qtd', 'quantidade', 'saldo', 'qty'] }; const list = aliases[field] || [field.toLowerCase()]; const found = appState.headers.find(h => { const headerLower = String(h || '').toLowerCase().replace(/[^a-z0-9]/g, ''); return list.some(alias => headerLower.includes(alias.replace(/[^a-z0-9]/g, ''))); }); return found || ''; }
+    function populateMapping() { const container = document.getElementById('mapping-container'); container.innerHTML = REQUIRED_FIELDS.map(field => `<div class="grid grid-cols-2 gap-4 items-center"><label class="font-medium">${field.replace(/_/g, ' ')}</label><select id="map-${field}" class="w-full p-2 border border-gray-300 rounded-lg"><option value="">Não mapeado</option>${appState.headers.map(h => `<option value="${h}" ${autoMapHeader(field) === h ? 'selected' : ''}>${h}</option>`).join('')}</select></div>`).join(''); }
+    function populatePreview() { const table = document.getElementById('preview-table'); const thead = `<thead><tr>${appState.headers.map(h => `<th class="px-4 py-2 bg-gray-100 font-semibold text-left">${h}</th>`).join('')}</tr></thead>`; const tbody = `<tbody>${appState.fileData.slice(0, 5).map(rowData => `<tr>${appState.headers.map((_, idx) => `<td class="px-4 py-2 border-t">${rowData[idx] ?? ''}</td>`).join('')}</tr>`).join('')}</tbody>`; table.innerHTML = thead + tbody; }
+    function processMapping() { appState.mapping = {}; const requiredWithoutBarcode = REQUIRED_FIELDS.filter(f => f !== 'CODIGO_BARRAS'); const allRequiredMapped = requiredWithoutBarcode.every(field => { const select = document.getElementById(`map-${field}`); if (select.value) { appState.mapping[field] = select.value; return true; } return false; }); const barcodeSelect = document.getElementById('map-CODIGO_BARRAS'); appState.mapping['CODIGO_BARRAS'] = barcodeSelect.value || ''; if (!allRequiredMapped) { alert('Por favor, mapeie todas as colunas obrigatórias (exceto Código de Barras, que é opcional e usará o SKU se vazio).'); return; } appState.processedData = appState.fileData.map(row => { const obj = {}; for (const field in appState.mapping) { const header = appState.mapping[field]; const idx = appState.headers.indexOf(header); obj[field] = (header && idx > -1) ? row[idx] : ''; } if (!appState.mapping['CODIGO_BARRAS'] || !obj['CODIGO_BARRAS']) { obj['CODIGO_BARRAS'] = obj['SKU'] || ''; } return obj; }).filter(item => item.SKU); appState.currentStep = 3; updateUI(); }
+    
+    // --- Editor de Layout ---
+    let dragInfo = null; const PIXELS_PER_MM = 3.78;
+    function renderCanvas() { /* ... código existente sem alterações ... */ const canvas = document.getElementById('canvas'); const { labelWidth, labelHeight, columns, spacing, fields } = appState.template; const bobinaW = (labelWidth * columns) + (spacing * (columns - 1)); canvas.style.width = `${bobinaW * PIXELS_PER_MM}px`; canvas.style.height = `${labelHeight * PIXELS_PER_MM}px`; canvas.innerHTML = ''; for (let i = 0; i < columns; i++) { const labelEl = document.createElement('div'); labelEl.className = 'absolute top-0 border border-gray-300 bg-white'; labelEl.style.left = `${i * (labelWidth + spacing) * PIXELS_PER_MM}px`; labelEl.style.width = `${labelWidth * PIXELS_PER_MM}px`; labelEl.style.height = `${labelHeight * PIXELS_PER_MM}px`; canvas.appendChild(labelEl); } const firstLabel = canvas.querySelector('div'); fields.forEach(field => { const fieldEl = document.createElement('div'); fieldEl.id = field.id; fieldEl.className = 'canvas-field'; if (field.id === appState.selectedFieldId) fieldEl.classList.add('selected'); fieldEl.style.left = `${field.x * PIXELS_PER_MM}px`; fieldEl.style.top = `${field.y * PIXELS_PER_MM}px`; fieldEl.style.fontSize = `${(field.fontSize || 3) * PIXELS_PER_MM / 2.5}px`; fieldEl.style.textAlign = field.align || 'left'; if (field.width) fieldEl.style.width = `${field.width * PIXELS_PER_MM}px`; if (field.type === 'barcode') { fieldEl.innerHTML = `<div class="bg-gray-200 w-full" style="height:${(field.height || 15) * PIXELS_PER_MM}px; background: repeating-linear-gradient(90deg,#9ca3af 0,#9ca3af 1px,transparent 1px,transparent 3px);"></div><p class="text-xs text-center">${field.content}</p>`; } else { fieldEl.textContent = field.content; } fieldEl.addEventListener('pointerdown', (e) => startDrag(e, field.id, 'move')); if (field.id === appState.selectedFieldId) { const resizeHandle = document.createElement('div'); resizeHandle.className = 'resize-handle'; resizeHandle.addEventListener('pointerdown', (e) => startDrag(e, field.id, 'resize')); fieldEl.appendChild(resizeHandle); } firstLabel.appendChild(fieldEl); }); }
+    function renderPropertiesPanel() { /* ... código existente sem alterações ... */ const panel = document.getElementById('properties-content'); const field = appState.template.fields.find(f => f.id === appState.selectedFieldId); const generalSettingsHTML = `<h4 class="text-md font-bold pt-4 border-t mt-4">Configurações da Etiqueta</h4><div class="grid grid-cols-2 gap-2"><div><label class="text-xs font-medium">Largura (mm)</label><input type="number" id="prop-label-width" value="${appState.template.labelWidth}" class="w-full p-1 border rounded text-sm" /></div><div><label class="text-xs font-medium">Altura (mm)</label><input type="number" id="prop-label-height" value="${appState.template.labelHeight}" class="w-full p-1 border rounded text-sm" /></div><div><label class="text-xs font-medium">Colunas</label><input type="number" id="prop-label-cols" value="${appState.template.columns}" min="1" class="w-full p-1 border rounded text-sm" /></div><div><label class="text-xs font-medium">Espaço (mm)</label><input type="number" id="prop-label-spacing" value="${appState.template.spacing}" class="w-full p-1 border rounded text-sm" /></div></div>`; if (!field) { panel.innerHTML = `<p class="text-gray-500 text-sm">Nenhum campo selecionado.</p>${generalSettingsHTML}${getAvailableFieldsHTML()}`; } else { const isBarcode = field.type === 'barcode'; panel.innerHTML = `<h4 class="text-md font-bold">Campo Selecionado</h4><div><label class="text-xs font-medium">Conteúdo</label><input type="text" id="prop-content" value="${field.content}" class="w-full p-1 border rounded text-sm" /></div><div class="grid grid-cols-2 gap-2"><div><label class="text-xs font-medium">X (mm)</label><input type="number" id="prop-x" value="${field.x.toFixed(1)}" step="0.5" class="w-full p-1 border rounded text-sm" /></div><div><label class="text-xs font-medium">Y (mm)</label><input type="number" id="prop-y" value="${field.y.toFixed(1)}" step="0.5" class="w-full p-1 border rounded text-sm" /></div></div><div class="grid grid-cols-2 gap-2"><div><label class="text-xs font-medium">${isBarcode ? 'Largura (mm)' : 'Largura Quebra (mm)'}</label><input type="number" id="prop-width" value="${field.width ? field.width.toFixed(1) : ''}" step="0.5" class="w-full p-1 border rounded text-sm" /></div><div><label class="text-xs font-medium">${isBarcode ? 'Altura (mm)' : 'Fonte (mm)'}</label><input type="number" id="prop-size" value="${isBarcode ? (field.height || 15).toFixed(1) : (field.fontSize || 3).toFixed(1)}" step="0.1" class="w-full p-1 border rounded text-sm" /></div></div>${!isBarcode ? `<div><label class="text-xs font-medium">Alinhamento</label><select id="prop-align" class="w-full p-1 border rounded text-sm"><option value="left" ${field.align === 'left' ? 'selected' : ''}>Esquerda</option><option value="center" ${field.align === 'center' ? 'selected' : ''}>Centro</option><option value="right" ${field.align === 'right' ? 'selected' : ''}>Direita</option></select></div>` : ''}<button id="delete-field-btn" class="bg-red-500 text-white hover:bg-red-600 text-sm py-1 px-2 rounded w-full mt-2">Excluir Campo</button>${generalSettingsHTML}${getAvailableFieldsHTML()}`; document.getElementById('prop-content').oninput = (e) => updateField({ content: e.target.value }); document.getElementById('prop-x').onchange = (e) => updateField({ x: parseFloat(e.target.value) }); document.getElementById('prop-y').onchange = (e) => updateField({ y: parseFloat(e.target.value) }); document.getElementById('prop-width').onchange = (e) => updateField({ width: parseFloat(e.target.value) || undefined }); document.getElementById('prop-size').onchange = (e) => { isBarcode ? updateField({ height: parseFloat(e.target.value) }) : updateField({ fontSize: parseFloat(e.target.value) }); }; if (!isBarcode) document.getElementById('prop-align').onchange = (e) => updateField({ align: e.target.value }); document.getElementById('delete-field-btn').onclick = deleteField; } document.getElementById('prop-label-width').onchange = (e) => { appState.template.labelWidth = parseFloat(e.target.value); saveCurrentLayout(); renderCanvas(); }; document.getElementById('prop-label-height').onchange = (e) => { appState.template.labelHeight = parseFloat(e.target.value); saveCurrentLayout(); renderCanvas(); }; document.getElementById('prop-label-cols').onchange = (e) => { appState.template.columns = parseInt(e.target.value); saveCurrentLayout(); renderCanvas(); }; document.getElementById('prop-label-spacing').onchange = (e) => { appState.template.spacing = parseFloat(e.target.value); saveCurrentLayout(); renderCanvas(); }; document.getElementById('add-text-btn').onclick = () => addField('text'); document.getElementById('add-price-btn').onclick = () => addField('price'); document.getElementById('add-barcode-btn').onclick = () => addField('barcode'); REQUIRED_FIELDS.forEach(p => { const btn = document.getElementById(`placeholder-btn-${p}`); if(btn) { btn.onclick = () => { if (appState.selectedFieldId) { const contentInput = document.getElementById('prop-content'); if (contentInput) { contentInput.value += `{${p}}`; updateField({ content: contentInput.value }); } } }; } }); }
+    function getAvailableFieldsHTML() { return `<h4 class="text-md font-bold pt-4 border-t mt-4">Campos Disponíveis</h4><div class="flex flex-wrap gap-1">${REQUIRED_FIELDS.map(p => `<button id="placeholder-btn-${p}" class="text-xs bg-gray-200 hover:bg-gray-300 rounded px-1.5 py-0.5">{${p}}</button>`).join('')}</div><div class="flex flex-col space-y-2 pt-4 border-t mt-4"><button id="add-text-btn" class="btn-secondary text-sm py-1">Adicionar Texto</button><button id="add-price-btn" class="btn-secondary text-sm py-1">Adicionar Preço</button><button id="add-barcode-btn" class="btn-secondary text-sm py-1">Adicionar Cód. Barras</button></div>`; }
+    function updateField(props) { const index = appState.template.fields.findIndex(f => f.id === appState.selectedFieldId); if (index > -1) { appState.template.fields[index] = { ...appState.template.fields[index], ...props }; saveCurrentLayout(); renderCanvas(); } }
+    function addField(type) { const newField = { id: `field-${Date.now()}`, type, x: 2, y: appState.template.fields.length * 8 + 5, content: type === 'price' ? '{PRECO}' : type === 'barcode' ? '{CODIGO_BARRAS}' : '{TEXTO}', width: 25 }; if (type !== 'barcode') { newField.fontSize = 3; } else { newField.height = 10; } appState.template.fields.push(newField); appState.selectedFieldId = newField.id; saveCurrentLayout(); renderCanvas(); renderPropertiesPanel(); }
+    function deleteField() { appState.template.fields = appState.template.fields.filter(f => f.id !== appState.selectedFieldId); appState.selectedFieldId = null; saveCurrentLayout(); renderCanvas(); renderPropertiesPanel(); }
+    function startDrag(e, id, mode) { e.stopPropagation(); e.preventDefault(); appState.selectedFieldId = id; renderCanvas(); renderPropertiesPanel(); const field = appState.template.fields.find(f => f.id === id); dragInfo = { id, mode, startX: e.clientX, startY: e.clientY, origX: field.x, origY: field.y, origW: field.width, origH: mode === 'resize' ? (field.type === 'barcode' ? field.height : field.fontSize) : 0 }; document.addEventListener('pointermove', onDrag); document.addEventListener('pointerup', stopDrag, { once: true }); }
+    function onDrag(e) { if (!dragInfo) return; const dx = (e.clientX - dragInfo.startX) / PIXELS_PER_MM; const dy = (e.clientY - dragInfo.startY) / PIXELS_PER_MM; let props = {}; if (dragInfo.mode === 'move') { props = { x: dragInfo.origX + dx, y: dragInfo.origY + dy }; } else { const field = appState.template.fields.find(f => f.id === dragInfo.id); if (field.type === 'barcode') { props = { width: Math.max(5, (dragInfo.origW || 20) + dx), height: Math.max(5, (dragInfo.origH || 10) + dy) }; } else { props = { width: Math.max(5, (dragInfo.origW || 20) + dx), fontSize: Math.max(1, (dragInfo.origH || 3) + (dy / 2)) }; } } updateField(props); }
+    function stopDrag() { if (dragInfo) { saveCurrentLayout(); dragInfo = null; } document.removeEventListener('pointermove', onDrag); }
+    function updateSummary() { document.getElementById('summary-width').textContent = appState.template.labelWidth; document.getElementById('summary-height').textContent = appState.template.labelHeight; document.getElementById('summary-cols').textContent = appState.template.columns; }
+    function populateQuantityList() { const container = document.getElementById('quantity-list'); container.innerHTML = ''; let totalLabels = 0; const uniqueItems = appState.processedData.reduce((acc, current) => { if (!acc.find(item => item.SKU === current.SKU)) { acc.push(current); } return acc; }, []); uniqueItems.forEach(item => { const qty = parseInt(item.ESTOQUE_ATUAL) || 0; totalLabels += qty; const div = document.createElement('div'); div.className = 'flex items-center justify-between p-2 border rounded-lg bg-white'; div.innerHTML = `<div class="flex-1 mr-4"><p class="text-sm font-medium truncate" title="${item.NOME_PRODUTO}">${item.NOME_PRODUTO}</p><p class="text-xs text-gray-500">SKU: ${item.SKU} | Estoque: ${item.ESTOQUE_ATUAL || 0}</p></div><div class="flex items-center space-x-2"><label class="text-xs">Qtd:</label><input type="number" value="${qty}" min="0" data-sku="${item.SKU}" class="w-20 p-1 border rounded text-sm text-right quantity-item-input" /></div>`; container.appendChild(div); }); document.getElementById('summary-total').textContent = totalLabels; container.oninput = updateTotalLabels; }
+    function updateTotalLabels() { let total = 0; document.querySelectorAll('.quantity-item-input').forEach(input => { total += parseInt(input.value) || 0; }); document.getElementById('summary-total').textContent = total; }
+    function replacePlaceholders(content, item) { let result = content; for (const key of REQUIRED_FIELDS) { const regex = new RegExp(`\\{${key}\\}`, 'g'); let val = item[key] ?? ''; if (key === 'PRECO') { let priceString = String(val).trim(); if (priceString.includes(',')) { priceString = priceString.replace(/\./g, '').replace(',', '.'); } const price = parseFloat(priceString); val = isNaN(price) ? 'R$ 0,00' : `R$ ${price.toFixed(2).replace('.', ',')}`; } result = result.replace(regex, String(val)); } return result; }
+    function generateZPLFromLayout(item) { const dpmm = parseInt(document.getElementById('dpmm-select').value) || 8; const mmToDots = (mm) => Math.round(mm * dpmm); let zpl = ''; appState.template.fields.forEach(field => { const x = mmToDots(field.x); const y = mmToDots(field.y); const width = mmToDots(field.width || appState.template.labelWidth - field.x); let content = replacePlaceholders(field.content, item); if (field.type === 'barcode') { const height = mmToDots(field.height || 15); const barcodeContent = String(item.CODIGO_BARRAS || content || '').trim(); zpl += `^FO${x},${y}^BY2,2.0^BCN,${height},Y,N,N^FD${barcodeContent}^FS\n`; } else { const fontHeight = mmToDots(field.fontSize || 3); const alignCode = field.align === 'center' ? 'C' : field.align === 'right' ? 'R' : 'L'; zpl += `^FO${x},${y}^A0N,${fontHeight},${fontHeight}^FB${width},10,0,${alignCode},0^FD${content}^FS\n`; } }); return zpl; }
+    function getQuantities() { const quantities = {}; document.querySelectorAll('.quantity-item-input').forEach(input => { quantities[input.dataset.sku] = parseInt(input.value) || 0; }); return quantities; }
+    function generateZPL(printQueue) { const dpmm = parseInt(document.getElementById('dpmm-select').value) || 8; const charset = document.getElementById('zpl-charset').value; const { labelWidth, labelHeight, columns, spacing } = appState.template; const mmToDots = (mm) => Math.round(mm * dpmm); const labelWidthDots = mmToDots(labelWidth); const labelHeightDots = mmToDots(labelHeight); const spacingDots = mmToDots(spacing); const totalWidthDots = (labelWidthDots * columns) + (spacingDots * (columns - 1)); let finalZPL = ''; for (let i = 0; i < printQueue.length; i += columns) { const rowItems = printQueue.slice(i, i + columns); let rowZPL = `^XA\n${charset === 'utf8' ? '^CI28\n' : ''}^PW${totalWidthDots}\n^LL${labelHeightDots}\n^LH0,0\n`; rowItems.forEach((item, colIndex) => { const offsetX = colIndex * (labelWidthDots + spacingDots); let populatedZpl = generateZPLFromLayout(item); const adjustedZPL = populatedZpl.replace(/\^FO(\d+),(\d+)/g, (match, x, y) => { return `^FO${parseInt(x) + offsetX},${y}`; }); rowZPL += adjustedZPL; }); rowZPL += '^XZ\n'; finalZPL += rowZPL; } return finalZPL; }
+    function mmToPt(mm) { return mm * 2.83465; }
+    function generatePDF(printQueue) { const { labelWidth, labelHeight, columns, spacing } = appState.template; const bobinaWidth = (labelWidth * columns) + (spacing * (columns - 1)); const bobinaWidthPt = mmToPt(bobinaWidth); const labelHeightPt = mmToPt(labelHeight); const orientation = bobinaWidthPt > labelHeightPt ? 'l' : 'p'; const pdf = new jsPDF({ orientation, unit: 'pt', format: [bobinaWidthPt, labelHeightPt] }); pdf.deletePage(1); const totalPages = Math.ceil(printQueue.length / columns); for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) { pdf.addPage([bobinaWidthPt, labelHeightPt], orientation); for (let colIndex = 0; colIndex < columns; colIndex++) { const itemIndex = pageIndex * columns + colIndex; if (itemIndex >= printQueue.length) break; const item = printQueue[itemIndex]; const offsetX_mm = colIndex * (labelWidth + spacing); appState.template.fields.forEach(field => { let content = replacePlaceholders(field.content || '', item); const x_pt = mmToPt(offsetX_mm + field.x); const y_pt = mmToPt(field.y); const fieldWidthPt = mmToPt(field.width || (labelWidth - field.x)); if (field.type === 'barcode') { const canvas = document.createElement('canvas'); try { JsBarcode(canvas, content, { displayValue: false, margin: 0, width: 2, height: 40 }); pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x_pt, y_pt, mmToPt(field.width), mmToPt(field.height)); pdf.setFontSize(8); pdf.text(content, x_pt + mmToPt(field.width) / 2, y_pt + mmToPt(field.height) + 8, { align: 'center' }); } catch (e) { console.error("Erro ao gerar código de barras:", e); } } else { const fontSizePt = mmToPt(field.fontSize || 3); pdf.setFontSize(fontSizePt); pdf.setTextColor(0, 0, 0); const lines = pdf.splitTextToSize(content, fieldWidthPt); let textX = x_pt; const align = field.align || 'left'; if (align === 'center') textX += fieldWidthPt / 2; else if (align === 'right') textX += fieldWidthPt; pdf.text(lines, textX, y_pt, { align, baseline: 'top', lineHeightFactor: 1.15 }); } }); } } pdf.save(`${(appState.fileName.split('.')[0] || 'etiquetas')}.pdf`); }
+    function downloadFile(content, fileName, contentType) { const a = document.createElement('a'); const file = new Blob([content], { type: contentType }); a.href = URL.createObjectURL(file); a.download = fileName; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href); }
+    function generateAndDownloadFiles() { const quantities = getQuantities(); const printQueue = appState.processedData.flatMap(item => { const qty = quantities[item.SKU] || 0; return Array(qty).fill(item); }); if (printQueue.length === 0) { alert('Nenhuma etiqueta para gerar. Verifique as quantidades.'); return; } const finalZPL = generateZPL(printQueue); downloadFile(finalZPL, `${(appState.fileName.split('.')[0] || 'etiquetas')}.zpl`, 'text/plain;charset=utf-8'); generatePDF(printQueue); }
+    
+    // --- PERSISTÊNCIA DE MODELOS ---
+    function saveCurrentLayout() { try { localStorage.setItem('zpl_current_layout', JSON.stringify(appState.template)); } catch (e) { console.error('Erro ao salvar layout localmente:', e); } }
+    async function loadTemplates() { if (!dbReady || !appState.user) { appState.templates = JSON.parse(localStorage.getItem('zpl_templates_local_fallback')) || []; return; } try { const { data, error } = await supabaseClient.from('label_templates').select('id, name, template_data').order('created_at', { ascending: false }); if (error) throw error; appState.templates = (data || []).map(item => ({ id: item.id, name: item.name, ...item.template_data })); } catch (error) { console.error('Erro ao carregar modelos do Supabase:', error); } }
+    
+    // --- FUNÇÕES DOS MODAIS ---
+    function showAuthOrExecute(action) {
+      if (appState.user) {
+        action();
+      } else {
+        dom.modals.auth.classList.add('visible');
+      }
+    }
+    
+    function showSaveModal() { showAuthOrExecute(() => { document.getElementById('template-name-input').value = appState.template.name || ''; dom.modals.save.classList.add('visible'); }); }
+    async function showLoadModal() { showAuthOrExecute(async () => { await loadTemplates(); const list = document.getElementById('template-list'); list.innerHTML = ''; if (appState.templates.length === 0) { list.innerHTML = '<p class="text-gray-500">Nenhum modelo salvo na nuvem.</p>'; } else { appState.templates.forEach(template => { const item = document.createElement('div'); item.className = 'flex justify-between items-center p-2 border-b'; item.innerHTML = `<span>${template.name}</span>`; const actions = document.createElement('div'); actions.className = 'flex space-x-2'; const loadBtn = document.createElement('button'); loadBtn.textContent = 'Carregar'; loadBtn.className = 'btn-primary text-xs px-2 py-1 rounded'; loadBtn.onclick = () => { appState.template = JSON.parse(JSON.stringify(template)); dom.modals.load.classList.remove('visible'); saveCurrentLayout(); renderCanvas(); renderPropertiesPanel(); }; const deleteBtn = document.createElement('button'); deleteBtn.textContent = 'Deletar'; deleteBtn.className = 'bg-red-500 text-white text-xs px-2 py-1 rounded'; deleteBtn.onclick = async () => { if (confirm(`Tem certeza que deseja deletar o modelo "${template.name}"?`)) { if (dbReady) { const { error } = await supabaseClient.from('label_templates').delete().eq('id', template.id); if (error) { alert(`Erro ao deletar: ${error.message}`); return; } } appState.templates = appState.templates.filter(t => t.id !== template.id); showLoadModal(); } }; actions.appendChild(loadBtn); actions.appendChild(deleteBtn); item.appendChild(actions); list.appendChild(item); }); } dom.modals.load.classList.add('visible'); }); }
+    async function confirmSaveTemplate() { const nameInput = document.getElementById('template-name-input'); const name = nameInput.value.trim(); if (!name) { alert('Por favor, informe um nome para o modelo.'); return; } appState.template.name = name; const { id, name: templateName, ...template_data } = appState.template; if (dbReady && appState.user) { try { const record = { user_id: appState.user.id, name: templateName, template_data }; if (id) { record.id = id; } const { data, error } = await supabaseClient.from('label_templates').upsert(record).select(); if (error) throw error; if (data && data[0] && !appState.template.id) { appState.template.id = data[0].id; } showNotification('Modelo salvo na nuvem com sucesso!', 'success'); } catch (error) { console.error('Falha ao salvar no Supabase:', error); alert(`Falha ao salvar na nuvem.`); } } else { alert('Não foi possível salvar. Faça login para salvar na nuvem.'); } dom.modals.save.classList.remove('visible'); }
+    function resetLayout() { if (confirm('Deseja resetar o layout para o padrão? Suas alterações não salvas serão perdidas.')) { appState.template = JSON.parse(JSON.stringify(DEFAULT_TEMPLATE)); appState.selectedFieldId = null; saveCurrentLayout(); renderCanvas(); renderPropertiesPanel(); } }
+
+    // --- SETUP DE EVENTOS ---
+    function setupEventListeners() {
+      dom.dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dom.dropzone.classList.add('drag-over'); });
+      dom.dropzone.addEventListener('dragleave', () => dom.dropzone.classList.remove('drag-over'));
+      dom.dropzone.addEventListener('drop', (e) => { e.preventDefault(); dom.dropzone.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+      dom.fileUploadBtn.addEventListener('click', () => dom.fileInput.click());
+      dom.fileInput.addEventListener('change', () => handleFile(dom.fileInput.files[0]));
+      
+      document.getElementById('process-mapping-btn').addEventListener('click', processMapping);
+      document.getElementById('back-to-mapping-btn-from-layout').addEventListener('click', () => { appState.currentStep = 2; updateUI(); });
+      document.getElementById('goto-generate-btn').addEventListener('click', () => { appState.currentStep = 4; updateUI(); });
+      document.getElementById('back-to-layout-btn').addEventListener('click', () => { appState.currentStep = 3; updateUI(); });
+      document.getElementById('generate-files-btn').addEventListener('click', generateAndDownloadFiles);
+      
+      document.getElementById('reset-layout-btn').addEventListener('click', resetLayout);
+      document.getElementById('save-template-btn').addEventListener('click', showSaveModal);
+      document.getElementById('cancel-save-btn').addEventListener('click', () => dom.modals.save.classList.remove('visible'));
+      document.getElementById('confirm-save-btn').addEventListener('click', confirmSaveTemplate);
+      document.getElementById('load-template-btn').addEventListener('click', showLoadModal);
+      document.getElementById('close-load-btn').addEventListener('click', () => dom.modals.load.classList.remove('visible'));
+
+      // Eventos de Autenticação
+      dom.auth.loginForm.addEventListener('submit', handleLogin);
+      dom.auth.signupForm.addEventListener('submit', handleSignup);
+      dom.user.logoutBtn.addEventListener('click', handleLogout);
+      dom.auth.showSignupBtn.addEventListener('click', () => { dom.auth.loginView.classList.add('hidden'); dom.auth.signupView.classList.remove('hidden'); });
+      dom.auth.showLoginBtn.addEventListener('click', () => { dom.auth.signupView.classList.add('hidden'); dom.auth.loginView.classList.remove('hidden'); });
+    }
+
+    // --- INICIA A APLICAÇÃO ---
+    init();
+
+  </script>
+</body>
+</html>
+
